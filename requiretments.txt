@@ -1,2 +1,2 @@
-streamlit
-pycryptodome
+streamlit==1.*
+pycryptodomex>=3.20
