@@ -1,283 +1,249 @@
 import base64
 import io
-import os
-from typing import Tuple
+import json
+import re
+from datetime import datetime
 
 import streamlit as st
-from Crypto.Cipher import AES
 from Crypto.PublicKey import RSA
-from Crypto.Random import get_random_bytes
+from Crypto.Cipher import PKCS1_OAEP
+from Crypto.Hash import SHA256
 
+# =============== Helpers ===============
 
-# ──────────────────────────────────────────────────────────────────────────────
-# UTIL: Konversi & PKCS7
-# ──────────────────────────────────────────────────────────────────────────────
-def b64e(b: bytes) -> str:
-    return base64.b64encode(b).decode("utf-8")
+def generate_rsa_keypair(bits: int = 2048) -> tuple[bytes, bytes]:
+    key = RSA.generate(bits)
+    private_pem = key.export_key(format="PEM")
+    public_pem = key.publickey().export_key(format="PEM")
+    return private_pem, public_pem
 
-def b64d(s: str) -> bytes:
-    return base64.b64decode(s.encode("utf-8"))
+def _oaep_cipher_from_pub(pub_pem: bytes) -> PKCS1_OAEP.PKCS1OAEP_Cipher:
+    pub_key = RSA.import_key(pub_pem)
+    return PKCS1_OAEP.new(pub_key, hashAlgo=SHA256)
 
-# ──────────────────────────────────────────────────────────────────────────────
-# AES-GCM (PyCryptodome)
-# ──────────────────────────────────────────────────────────────────────────────
-from Crypto.Cipher import AES
-from Crypto.Random import get_random_bytes
+def _oaep_cipher_from_priv(priv_pem: bytes) -> PKCS1_OAEP.PKCS1OAEP_Cipher:
+    priv_key = RSA.import_key(priv_pem)
+    return PKCS1_OAEP.new(priv_key, hashAlgo=SHA256)
 
-def generate_key(n_bits: int = 128) -> bytes:
-    if n_bits not in (128, 192, 256):
-        raise ValueError("Panjang kunci harus 128, 192, atau 256 bit.")
-    return get_random_bytes(n_bits // 8)
+def rsa_oaep_chunk_size(pub_or_priv_pem: bytes) -> int:
+    """Maximum plaintext bytes per RSA-OAEP block (SHA-256)."""
+    key = RSA.import_key(pub_or_priv_pem)
+    k = key.size_in_bytes()              # modulus length in bytes
+    hlen = 32                            # SHA-256 digest size
+    return k - 2 * hlen - 2              # RFC 8017
 
-def generate_nonce() -> bytes:
-    # 12 byte adalah ukuran nonce yang direkomendasikan untuk GCM
-    return get_random_bytes(12)
-
-def encrypt_aes_gcm(plaintext: bytes, key: bytes, aad: bytes = b"") -> Tuple[bytes, bytes, bytes]:
+def rsa_encrypt_oaep_chunked(data: bytes, pub_pem: bytes) -> bytes:
     """
-    Return: (nonce, ciphertext, tag)
+    Encrypt arbitrary length data with RSA-OAEP (SHA-256) using chunking.
+    Output is concatenation of fixed-size RSA blocks (each exactly k bytes).
     """
-    nonce = generate_nonce()
-    cipher = AES.new(key, AES.MODE_GCM, nonce=nonce)
-    if aad:
-        cipher.update(aad)
-    ciphertext, tag = cipher.encrypt_and_digest(plaintext)
-    return nonce, ciphertext, tag
+    cipher = _oaep_cipher_from_pub(pub_pem)
+    key = RSA.import_key(pub_pem)
+    k = key.size_in_bytes()
+    chunk_len = rsa_oaep_chunk_size(pub_pem)
 
-def decrypt_aes_gcm(nonce: bytes, ciphertext: bytes, tag: bytes, key: bytes, aad: bytes = b"") -> bytes:
-    cipher = AES.new(key, AES.MODE_GCM, nonce=nonce)
-    if aad:
-        cipher.update(aad)
-    return cipher.decrypt_and_verify(ciphertext, tag)
+    out = io.BytesIO()
+    for i in range(0, len(data), chunk_len):
+        block = data[i:i+chunk_len]
+        ct = cipher.encrypt(block)       # length == k
+        out.write(ct)
+    return out.getvalue()
 
-# ──────────────────────────────────────────────────────────────────────────────
-# STREAMLIT APP
-# ──────────────────────────────────────────────────────────────────────────────
-st.set_page_config(page_title="AES-GCM Demo", page_icon="🛡️", layout="centered")
+def rsa_decrypt_oaep_chunked(cipherblob: bytes, priv_pem: bytes) -> bytes:
+    """
+    Decrypt concatenated RSA-OAEP blocks. Splits by k (modulus bytes).
+    """
+    cipher = _oaep_cipher_from_priv(priv_pem)
+    key = RSA.import_key(priv_pem)
+    k = key.size_in_bytes()
 
-st.title("🔐 AES (GCM) – Enkripsi & Dekripsi")
-st.caption("Aman (confidentiality + integrity) menggunakan PyCryptodome. UI menghindari konflik key Streamlit.")
+    if len(cipherblob) % k != 0:
+        raise ValueError("Ciphertext length is not a multiple of the RSA block size.")
 
-with st.expander("ℹ️ Panduan singkat", expanded=False):
-    st.markdown(
-        """
-- **Modus:** AES-GCM (direkomendasikan) — menghasilkan `ciphertext` + `tag` untuk verifikasi integritas.  
-- **I/O format:** tampil sebagai **Base64** agar mudah copy–paste/unduh.  
-- **Kunci:** bisa **buat otomatis** atau **input manual** dalam bentuk **hex**.  
-- **Atribut tambahan (AAD):** opsional; jika diisi saat enkripsi, **wajib** sama saat dekripsi.
-- **Catatan error ‘duplicate key’:** semua komponen diberi `key` **statik & unik**, bukan dinamis dari data/nonce.
-        """
+    out = io.BytesIO()
+    for i in range(0, len(cipherblob), k):
+        block = cipher.decrypt(cipherblob[i:i+k])
+        out.write(block)
+    return out.getvalue()
+
+def b64encode(data: bytes) -> str:
+    return base64.b64encode(data).decode("utf-8")
+
+def b64decode(s: str) -> bytes:
+    return base64.b64decode(s.encode("utf-8"), validate=True)
+
+def valid_email(email: str) -> bool:
+    # Simple RFC5322-ish email check
+    return re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", email) is not None
+
+def download_bytes(filename: str, data: bytes, mime: str = "application/octet-stream"):
+    st.download_button(
+        label=f"⬇️ Download {filename}",
+        data=data,
+        file_name=filename,
+        mime=mime,
+        key=f"dl-{filename}"
     )
 
-st.subheader("1) Konfigurasi Kunci", anchor="config")
+# =============== UI ===============
+
+st.set_page_config(page_title="RSA Form Encryptor", page_icon="🔐", layout="centered")
+st.title("🔐 RSA Form Encryptor (Streamlit)")
+
+st.write(
+    "Aplikasi demo **RSA-OAEP (SHA-256)** untuk mengenkripsi data form "
+    "(**nama**, **email**, **pesan**). Mendukung *chunking* sehingga pesan panjang tetap bisa terenkripsi."
+)
+
+with st.sidebar:
+    st.header("🔑 Manajemen Kunci")
+    key_bits = st.selectbox("Panjang kunci (bits)", [2048, 3072, 4096], index=0, key="bits")
+
+    colg1, colg2 = st.columns(2)
+    with colg1:
+        if st.button("🔧 Generate Keypair", key="gen"):
+            priv, pub = generate_rsa_keypair(key_bits)
+            st.session_state["private_pem"] = priv
+            st.session_state["public_pem"] = pub
+            st.success(f"Keypair {key_bits}-bit berhasil dibuat.")
+
+    with colg2:
+        st.write("")
+
+    st.subheader("Unggah Kunci (Opsional)")
+    up_pub = st.file_uploader("Public Key (.pem)", type=["pem"], key="up_pub")
+    up_priv = st.file_uploader("Private Key (.pem)", type=["pem"], key="up_priv")
+
+    if up_pub is not None:
+        try:
+            _ = RSA.import_key(up_pub.read())
+            st.session_state["public_pem"] = _ .export_key()
+            st.success("Public key dimuat.")
+        except Exception as e:
+            st.error(f"Gagal memuat public key: {e}")
+
+    if up_priv is not None:
+        try:
+            up_priv.seek(0)
+            priv_pem = up_priv.read()
+            _ = RSA.import_key(priv_pem)
+            st.session_state["private_pem"] = priv_pem
+            st.success("Private key dimuat.")
+        except Exception as e:
+            st.error(f"Gagal memuat private key: {e}")
+
+    st.divider()
+    if "public_pem" in st.session_state:
+        download_bytes("public.pem", st.session_state["public_pem"], "application/x-pem-file")
+    if "private_pem" in st.session_state:
+        download_bytes("private.pem", st.session_state["private_pem"], "application/x-pem-file")
+
+# =============== Encryption Form ===============
+
+st.subheader("✉️ Enkripsi Data Form")
+
+with st.form("encrypt_form", clear_on_submit=False):
+    name = st.text_input("Nama", max_chars=120, key="name")
+    email = st.text_input("Email", max_chars=120, key="email")
+    message = st.text_area("Pesan", height=160, key="message")
+    use_timestamp = st.checkbox("Sertakan timestamp", value=True, key="ts")
+    submitted = st.form_submit_button("🔒 Enkripsi dengan RSA-OAEP")
+
+if submitted:
+    if not name.strip():
+        st.error("Nama tidak boleh kosong.")
+    elif not email.strip() or not valid_email(email.strip()):
+        st.error("Email tidak valid.")
+    elif not message.strip():
+        st.error("Pesan tidak boleh kosong.")
+    elif "public_pem" not in st.session_state:
+        st.error("Public key belum tersedia. Generate atau unggah public key terlebih dahulu.")
+    else:
+        payload = {
+            "nama": name.strip(),
+            "email": email.strip(),
+            "pesan": message,
+        }
+        if use_timestamp:
+            payload["timestamp"] = datetime.utcnow().isoformat() + "Z"
+
+        raw = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+
+        try:
+            pub = st.session_state["public_pem"]
+            # Info chunking
+            chunk_len = rsa_oaep_chunk_size(pub)
+            key_size_bytes = RSA.import_key(pub).size_in_bytes()
+            st.info(
+                f"Panjang plaintext: **{len(raw)}** byte • "
+                f"Chunk RSA-OAEP: **{chunk_len}** byte • "
+                f"Ukuran blok ciphertext RSA: **{key_size_bytes}** byte."
+            )
+
+            cipherblob = rsa_encrypt_oaep_chunked(raw, pub)
+            b64 = b64encode(cipherblob)
+
+            st.success("Enkripsi berhasil ✅")
+            st.code(b64, language="text")
+
+            st.download_button(
+                label="⬇️ Download ciphertext (base64).txt",
+                data=b64,
+                file_name="ciphertext_base64.txt",
+                mime="text/plain",
+                key="dl-ct-b64",
+            )
+
+            st.download_button(
+                label="⬇️ Download ciphertext.bin",
+                data=cipherblob,
+                file_name="ciphertext.bin",
+                mime="application/octet-stream",
+                key="dl-ct-bin",
+            )
+
+        except Exception as e:
+            st.error(f"Gagal mengenkripsi: {e}")
+
+# =============== Decryption ===============
+
+st.subheader("🔓 Dekripsi")
 
 col1, col2 = st.columns(2)
+
 with col1:
-    key_len_bits = st.radio(
-        "Panjang kunci",
-        options=[128, 192, 256],
-        index=0,
-        horizontal=True,
-        key="key_len_bits_radio",
-        help="Pilih ukuran keamanan. 128-bit sudah kuat untuk banyak use case."
+    b64_input = st.text_area(
+        "Tempel ciphertext (base64)",
+        placeholder="Tempel ciphertext base64 di sini...",
+        height=160,
+        key="b64area"
     )
 
 with col2:
-    key_mode = st.radio(
-        "Sumber kunci",
-        options=["Generate otomatis", "Masukkan manual (hex)"],
-        index=0,
-        horizontal=False,
-        key="key_mode_radio"
-    )
+    ct_file = st.file_uploader("Atau unggah ciphertext.bin", type=["bin"], key="ctbin")
 
-if "app_key_bytes" not in st.session_state:
-    st.session_state.app_key_bytes = generate_key(key_len_bits)
-
-if key_mode == "Generate otomatis":
-    if st.button("🔁 Generate kunci baru", key="btn_gen_key"):
-        st.session_state.app_key_bytes = generate_key(key_len_bits)
-    st.text_input(
-        "Kunci (hex) – readonly",
-        value=st.session_state.app_key_bytes.hex(),
-        key="key_hex_display",
-        help="Ini adalah kunci yang sedang dipakai.",
-        disabled=True
-    )
-else:
-    key_hex_input = st.text_input(
-        "Masukkan kunci (hex)",
-        value=st.session_state.app_key_bytes.hex(),
-        key="key_hex_input",
-        help=f"Panjang harus sesuai: {key_len_bits//8} byte → {key_len_bits//4} digit hex."
-    )
-    apply_key = st.button("✅ Pakai kunci ini", key="btn_apply_key")
-    if apply_key:
-        try:
-            kb = bytes.fromhex(key_hex_input.strip())
-            if len(kb) != (key_len_bits // 8):
-                st.error(f"Panjang kunci tidak sesuai. Diperlukan {key_len_bits//8} byte.")
-            else:
-                st.session_state.app_key_bytes = kb
-                st.success("Kunci diperbarui.")
-        except ValueError:
-            st.error("Format hex tidak valid.")
-
-aad_text = st.text_input(
-    "AAD (opsional, akan dilindungi integritas – Base64 saat tampil)",
-    value="",
-    key="aad_text_input",
-    help="Jika digunakan, AAD harus identik saat enkripsi & dekripsi."
-)
-
-st.markdown("---")
-tab_enc, tab_dec = st.tabs(["🔒 Enkripsi", "🔓 Dekripsi"])
-
-# ──────────────────────────────────────────────────────────────────────────────
-# ENKRIPSI
-# ──────────────────────────────────────────────────────────────────────────────
-with tab_enc:
-    st.subheader("Input Data untuk Enkripsi")
-
-    src = st.radio(
-        "Sumber data",
-        options=["Ketik teks", "Unggah file"],
-        index=0,
-        key="enc_source_radio",
-        horizontal=True
-    )
-
-    plaintext_bytes = b""
-    filename_hint = "encrypted.bin"
-    if src == "Ketik teks":
-        text = st.text_area(
-            "Plaintext (teks UTF-8)",
-            height=150,
-            key="enc_text_area",
-            placeholder="Tulis pesan rahasia di sini…"
-        )
-        if text:
-            plaintext_bytes = text.encode("utf-8")
-            filename_hint = "encrypted.txt.bin"
+if st.button("Dekripsi Sekarang", key="decbtn"):
+    if "private_pem" not in st.session_state:
+        st.error("Private key belum tersedia. Unggah atau generate private key terlebih dahulu.")
     else:
-        up = st.file_uploader(
-            "Pilih file untuk dienkripsi",
-            type=None,
-            key="enc_file_uploader"
-        )
-        if up is not None:
-            plaintext_bytes = up.read()
-            filename_hint = os.path.splitext(up.name)[0] + ".enc"
-
-    do_encrypt = st.button("🚀 Enkripsi dengan AES-GCM", key="btn_encrypt_now")
-    if do_encrypt:
-        if not plaintext_bytes:
-            st.warning("Mohon isi teks atau unggah file terlebih dahulu.")
-        else:
-            aad_bytes = aad_text.encode("utf-8") if aad_text else b""
-            key = st.session_state.app_key_bytes
-            nonce, ct, tag = encrypt_aes_gcm(plaintext_bytes, key, aad=aad_bytes)
-
-            st.success("Enkripsi berhasil.")
-            st.code(f"Nonce (Base64): {b64e(nonce)}", language="text")
-            st.code(f"Tag   (Base64): {b64e(tag)}", language="text")
-            st.code(f"Ciphertext (Base64): {b64e(ct)}", language="text")
-
-            # Paket gabungan (nonce || tag || ciphertext) — praktis untuk simpan/unduh
-            packaged = b"".join([nonce, tag, ct])
-            st.download_button(
-                label="⬇️ Unduh paket (nonce||tag||ciphertext)",
-                data=packaged,
-                file_name=filename_hint,
-                mime="application/octet-stream",
-                key="dl_enc_package_btn"
-            )
-
-            # Alternatif: simpan tiga elemen dalam file teks (Base64)
-            text_bundle = (
-                f"nonce_b64={b64e(nonce)}\n"
-                f"tag_b64={b64e(tag)}\n"
-                f"ciphertext_b64={b64e(ct)}\n"
-            )
-            st.download_button(
-                label="⬇️ Unduh hasil (teks Base64)",
-                data=text_bundle.encode("utf-8"),
-                file_name="aes_gcm_result.txt",
-                mime="text/plain",
-                key="dl_enc_textbundle_btn"
-            )
-
-# ──────────────────────────────────────────────────────────────────────────────
-# DEKRIPSI
-# ──────────────────────────────────────────────────────────────────────────────
-with tab_dec:
-    st.subheader("Pilih Format Input Dekripsi")
-
-    dec_mode = st.radio(
-        "Format input",
-        options=["Masukkan Base64 masing-masing (Nonce/Tag/Ciphertext)", "Unggah paket biner (nonce||tag||ciphertext)"],
-        index=0,
-        horizontal=False,
-        key="dec_mode_radio"
-    )
-
-    nonce_b64 = tag_b64 = ct_b64 = ""
-    packed_bytes = None
-
-    if dec_mode.startswith("Masukkan"):
-        nonce_b64 = st.text_input("Nonce (Base64)", key="dec_nonce_b64")
-        tag_b64 = st.text_input("Tag (Base64)", key="dec_tag_b64")
-        ct_b64 = st.text_area("Ciphertext (Base64)", key="dec_ct_b64", height=150)
-    else:
-        up_pack = st.file_uploader(
-            "Unggah file paket biner (nonce||tag||ciphertext)",
-            type=None,
-            key="dec_pack_uploader"
-        )
-        if up_pack is not None:
-            packed_bytes = up_pack.read()
-
-    do_decrypt = st.button("🧩 Dekripsi sekarang", key="btn_decrypt_now")
-    if do_decrypt:
-        key = st.session_state.app_key_bytes
-        aad_bytes = aad_text.encode("utf-8") if aad_text else b""
-
         try:
-            if packed_bytes:
-                # Paket gabungan: 12 byte nonce, 16 byte tag (default GCM), sisanya ciphertext
-                if len(packed_bytes) < 12 + 16:
-                    st.error("Paket terlalu pendek. Pastikan format: nonce(12B)||tag(16B)||ciphertext.")
-                else:
-                    nonce = packed_bytes[:12]
-                    tag = packed_bytes[12:28]
-                    ct = packed_bytes[28:]
-                    pt = decrypt_aes_gcm(nonce, ct, tag, key, aad=aad_bytes)
+            if ct_file is not None:
+                cipherblob = ct_file.read()
+            elif b64_input.strip():
+                cipherblob = b64decode(b64_input.strip())
             else:
-                if not (nonce_b64 and tag_b64 and ct_b64):
-                    st.error("Mohon isi Nonce/Tag/Ciphertext (Base64) lengkap atau unggah paket.")
-                    st.stop()
-                nonce = b64d(nonce_b64.strip())
-                tag = b64d(tag_b64.strip())
-                ct = b64d(ct_b64.strip())
-                pt = decrypt_aes_gcm(nonce, ct, tag, key, aad=aad_bytes)
+                st.error("Masukkan ciphertext base64 ATAU unggah ciphertext.bin terlebih dahulu.")
+                cipherblob = None
 
-            # Tampilkan sebagai teks (jika UTF-8) + tombol unduh
-            try:
-                as_text = pt.decode("utf-8")
-                st.success("Dekripsi sukses. Menampilkan hasil sebagai teks (UTF-8).")
-                st.text_area("Plaintext (UTF-8)", value=as_text, height=150, key="dec_plaintext_display")
-            except UnicodeDecodeError:
-                st.success("Dekripsi sukses. Hasil adalah biner (bukan teks UTF-8).")
-
-            st.download_button(
-                label="⬇️ Unduh plaintext",
-                data=pt,
-                file_name="decrypted_output",
-                mime="application/octet-stream",
-                key="dl_plain_btn"
-            )
-        except ValueError as e:
-            # Kesalahan tipikal: tag tidak cocok (kunci/nonce/tag/AAD salah)
-            st.error(f"Gagal dekripsi: {e}. Pastikan kunci, nonce, tag, dan AAD sesuai.")
+            if cipherblob:
+                plain = rsa_decrypt_oaep_chunked(cipherblob, st.session_state["private_pem"])
+                # Tampilkan JSON jika valid, jika tidak tampilkan raw text.
+                try:
+                    obj = json.loads(plain.decode("utf-8"))
+                    st.success("Dekripsi berhasil ✅ (JSON)")
+                    st.json(obj, expanded=True)
+                except Exception:
+                    st.success("Dekripsi berhasil ✅ (Teks)")
+                    st.code(plain.decode("utf-8", errors="replace"))
         except Exception as e:
-            st.error(f"Terjadi error tak terduga: {e}")
+            st.error(f"Gagal mendekripsi: {e}")
