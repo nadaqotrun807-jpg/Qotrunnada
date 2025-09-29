@@ -1,2 +1,2 @@
-pycryptodome>=3.20
-streamlit>=1.36
+streamlit==1.38.0
+pycryptodome==3.20.0
