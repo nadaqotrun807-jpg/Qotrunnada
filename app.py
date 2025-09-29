@@ -1,22 +1,64 @@
-import base64
-import json
 import os
 import uuid
+import json
+import base64
+import sqlite3
+import smtplib
 from datetime import datetime, timezone
+from email.message import EmailMessage
+
 import streamlit as st
 from Crypto.Cipher import AES
+from Crypto.Random import get_random_bytes
 
-# ===================== Konfigurasi & Utilitas =====================
+# ===================== Konstanta & Util =====================
+DB_DIR = "vault"
+DB_PATH = os.path.join(DB_DIR, "submissions.db")
 
-# Lokasi penyimpanan server-side untuk ciphertext
-VAULT_DIR = "vault"
-VAULT_FILE = os.path.join(VAULT_DIR, "submissions.jsonl")
+def ensure_db():
+    os.makedirs(DB_DIR, exist_ok=True)
+    with sqlite3.connect(DB_PATH) as conn:
+        c = conn.cursor()
+        c.execute("""
+        CREATE TABLE IF NOT EXISTS submissions (
+            id TEXT PRIMARY KEY,
+            ts TEXT NOT NULL,
+            sender TEXT,
+            package_b64 TEXT NOT NULL,
+            nonce_b64 TEXT NOT NULL,
+            tag_b64 TEXT NOT NULL,
+            ciphertext_b64 TEXT NOT NULL
+        )
+        """)
+        c.execute("CREATE INDEX IF NOT EXISTS idx_ts ON submissions(ts)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_sender ON submissions(sender)")
+        conn.commit()
 
-def ensure_vault():
-    os.makedirs(VAULT_DIR, exist_ok=True)
-    if not os.path.exists(VAULT_FILE):
-        with open(VAULT_FILE, "w", encoding="utf-8"):
-            pass
+def db_insert(record: dict):
+    with sqlite3.connect(DB_PATH) as conn:
+        c = conn.cursor()
+        c.execute("""
+            INSERT INTO submissions (id, ts, sender, package_b64, nonce_b64, tag_b64, ciphertext_b64)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (record["id"], record["ts"], record["sender"], record["package_b64"],
+              record["nonce_b64"], record["tag_b64"], record["ciphertext_b64"]))
+        conn.commit()
+
+def db_list(search: str | None = None) -> list[dict]:
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        c = conn.cursor()
+        if search:
+            q = f"%{search.lower()}%"
+            c.execute("""
+                SELECT * FROM submissions
+                WHERE lower(id) LIKE ? OR lower(sender) LIKE ?
+                ORDER BY ts DESC
+            """, (q, q))
+        else:
+            c.execute("SELECT * FROM submissions ORDER BY ts DESC")
+        rows = c.fetchall()
+        return [dict(r) for r in rows]
 
 def now_iso():
     return datetime.now(timezone.utc).isoformat()
@@ -28,32 +70,35 @@ def b64d(s: str) -> bytes:
     return base64.b64decode(s.encode("utf-8"))
 
 def load_secrets():
-    # Ambil kunci & password admin dari secrets
-    admin_pw = st.secrets.get("ADMIN_PASSWORD", None)
-    key_hex = st.secrets.get("AES128_KEY_HEX", None)
+    admin_pw = st.secrets.get("ADMIN_PASSWORD")
+    key_hex  = st.secrets.get("AES128_KEY_HEX")
+    smtp = {
+        "host": st.secrets.get("SMTP_HOST"),
+        "port": st.secrets.get("SMTP_PORT"),
+        "user": st.secrets.get("SMTP_USER"),
+        "pass": st.secrets.get("SMTP_PASS"),
+        "from_email": st.secrets.get("FROM_EMAIL"),
+        "admin_email": st.secrets.get("ADMIN_EMAIL"),
+    }
+
     if not admin_pw or not key_hex:
-        st.warning(
-            "⚠️ ADMIN_PASSWORD atau AES128_KEY_HEX belum diset di secrets. "
-            "Gunakan `.streamlit/secrets.toml` saat lokal, atau App Secrets jika di Streamlit Cloud."
-        )
+        st.warning("⚠️ ADMIN_PASSWORD atau AES128_KEY_HEX belum diset di secrets.")
+
     key_bytes = None
     if key_hex:
-        key_hex = key_hex.strip().lower().replace("0x", "")
-        if len(key_hex) != 32:
+        hx = key_hex.strip().lower().replace("0x", "")
+        if len(hx) != 32:
             st.error("AES128_KEY_HEX harus 32 digit hex (128-bit).")
         else:
             try:
-                key_bytes = bytes.fromhex(key_hex)
+                key_bytes = bytes.fromhex(hx)
             except Exception as e:
                 st.error(f"Kunci hex tidak valid: {e}")
-    return admin_pw, key_bytes
 
+    return admin_pw, key_bytes, smtp
+
+# ===================== Kripto =====================
 def aes_gcm_encrypt(plaintext: str, key: bytes) -> dict:
-    """
-    Enkripsi dengan AES-128 GCM.
-    Paket = base64(nonce || tag || ciphertext)
-    """
-    from Crypto.Random import get_random_bytes
     nonce = get_random_bytes(12)
     cipher = AES.new(key, AES.MODE_GCM, nonce=nonce)
     ciphertext, tag = cipher.encrypt_and_digest(plaintext.encode("utf-8"))
@@ -76,45 +121,74 @@ def aes_gcm_decrypt(package_b64: str, key: bytes) -> str:
     pt = cipher.decrypt_and_verify(ciphertext, tag)
     return pt.decode("utf-8")
 
-def vault_append(record: dict) -> None:
-    ensure_vault()
-    with open(VAULT_FILE, "a", encoding="utf-8") as f:
-        f.write(json.dumps(record, ensure_ascii=False) + "\n")
+# ===================== Email =====================
+def smtp_config_ok(smtp: dict) -> bool:
+    keys = ["host", "port", "user", "pass", "from_email", "admin_email"]
+    return all(smtp.get(k) for k in keys)
 
-def vault_read_all() -> list:
-    ensure_vault()
-    items = []
-    with open(VAULT_FILE, "r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                items.append(json.loads(line))
-            except json.JSONDecodeError:
-                continue
-    return items
+def send_admin_notification(record: dict, smtp: dict) -> tuple[bool, str]:
+    if not smtp_config_ok(smtp):
+        return False, "Konfigurasi SMTP tidak lengkap."
+
+    msg = EmailMessage()
+    msg["Subject"] = f"[AES-128 GCM] Pesan Baru • {record.get('id')}"
+    msg["From"] = smtp["from_email"]
+    msg["To"] = smtp["admin_email"]
+
+    preview = record.get("ciphertext_b64", "")[:64] + "..." if record.get("ciphertext_b64") else "(kosong)"
+    body = (
+        f"Hai Admin,\n\n"
+        f"Ada pengiriman pesan baru yang berhasil DIENKRIPSI.\n\n"
+        f"ID: {record.get('id')}\n"
+        f"Waktu (UTC): {record.get('ts')}\n"
+        f"Pengirim: {record.get('sender')}\n"
+        f"Cipher (preview, base64): {preview}\n\n"
+        f"Gunakan panel admin untuk mendekripsi.\n"
+    )
+    msg.set_content(body)
+
+    html = f"""
+    <html><body>
+      <p>Hai Admin,</p>
+      <p>Ada pengiriman pesan baru yang berhasil <b>DIENKRIPSI</b>.</p>
+      <ul>
+        <li><b>ID:</b> {record.get('id')}</li>
+        <li><b>Waktu (UTC):</b> {record.get('ts')}</li>
+        <li><b>Pengirim:</b> {record.get('sender')}</li>
+        <li><b>Cipher (preview, base64):</b> <code>{preview}</code></li>
+      </ul>
+      <p>Gunakan panel admin untuk mendekripsi.</p>
+    </body></html>
+    """
+    msg.add_alternative(html, subtype="html")
+
+    try:
+        with smtplib.SMTP(smtp["host"], int(smtp["port"])) as server:
+            server.ehlo()
+            server.starttls()
+            server.login(smtp["user"], smtp["pass"])
+            server.send_message(msg)
+        return True, "Notifikasi email terkirim."
+    except Exception as e:
+        return False, f"Gagal kirim email: {e}"
 
 # ===================== UI =====================
-
-st.set_page_config(page_title="AES-128 GCM • Publik & Admin", page_icon="🔐", layout="centered")
-st.title("🔐 AES-128 (GCM) — Form Publik & Panel Admin")
+st.set_page_config(page_title="AES-128 GCM • Publik & Admin (SQLite)", page_icon="🔐", layout="centered")
+st.title("🔐 AES-128 (GCM) — Form Publik & Panel Admin (SQLite)")
 
 st.caption(
-    "Publik dapat **mengirim pesan**. Ciphertext **tidak ditampilkan** ke publik dan hanya **disimpan di server**. "
-    "Admin dapat **melihat & mendekripsi** setelah login."
+    "Publik mengirim pesan → server <b>mengenkripsi</b> dan menyimpan ke <code>vault/submissions.db</code>. "
+    "Admin login untuk <b>lihat & dekripsi</b>. Email notifikasi opsional.",
+    unsafe_allow_html=True,
 )
 
-admin_pw_secret, aes_key = load_secrets()
-
+ensure_db()
+admin_pw_secret, aes_key, smtp = load_secrets()
 mode = st.radio("Pilih Mode", ["📝 Kirim Pesan (Publik)", "🛡️ Panel Admin"], horizontal=True)
 
-# ===================== Mode Publik =====================
+# ---------- Mode Publik ----------
 if mode == "📝 Kirim Pesan (Publik)":
     st.subheader("Form Pengiriman Pesan")
-    st.write("Isi pesan di bawah ini. Pesan akan **dienkripsi** dan **disimpan aman**. "
-             "Kamu akan mendapat **kode referensi** — simpan jika perlu.")
-
     with st.form("public_form", clear_on_submit=True):
         sender = st.text_input("Nama / Identitas pengirim (opsional)", placeholder="Anonim")
         message = st.text_area("Pesan (plaintext)", height=160, placeholder="Tulis pesan kamu di sini...")
@@ -128,34 +202,36 @@ if mode == "📝 Kirim Pesan (Publik)":
         else:
             try:
                 enc = aes_gcm_encrypt(message.strip(), aes_key)
-                ref_id = str(uuid.uuid4())
-                record = {
-                    "id": ref_id,
+                rec = {
+                    "id": str(uuid.uuid4()),
                     "ts": now_iso(),
                     "sender": sender.strip() or "Anonim",
                     "package_b64": enc["package_b64"],
-                    # simpan juga komponen jika diperlukan audit
                     "nonce_b64": enc["nonce_b64"],
                     "tag_b64": enc["tag_b64"],
                     "ciphertext_b64": enc["ciphertext_b64"],
                 }
-                vault_append(record)
+                db_insert(rec)
 
-                # ❗ Tidak menampilkan ciphertext ke publik
-                st.success("Pesan berhasil dienkripsi & disimpan aman. Terima kasih! 🙌")
-                st.info(f"Kode Referensi: **{ref_id}**\n\n"
-                        "Simpan kode ini jika suatu saat perlu konfirmasi ke admin.")
+                ok, info = send_admin_notification(rec, smtp)
+                if ok:
+                    st.success("Pesan terenkripsi & tersimpan (SQLite). Notifikasi email terkirim. ✅")
+                else:
+                    st.success("Pesan terenkripsi & tersimpan (SQLite).")
+                    st.warning(info)
+
+                st.info(f"Kode Referensi: **{rec['id']}** — simpan jika perlu verifikasi ke admin.")
             except Exception as e:
                 st.error(f"Gagal memproses: {e}")
 
-# ===================== Mode Admin =====================
+# ---------- Mode Admin ----------
 else:
     st.subheader("Login Admin")
     admin_pw_input = st.text_input("Password Admin", type="password")
 
     if st.button("Masuk") or st.session_state.get("admin_ok"):
         if not admin_pw_secret:
-            st.error("ADMIN_PASSWORD belum diset di secrets.")
+            st.error("ADMIN_PASSWORD belum diset.")
         elif admin_pw_input == admin_pw_secret or st.session_state.get("admin_ok"):
             st.session_state["admin_ok"] = True
             if aes_key is None:
@@ -163,57 +239,40 @@ else:
             else:
                 st.success("Login admin berhasil.")
 
-                # Tabel ringkas submissions
-                items = vault_read_all()
+                st.write("### Daftar Pesan Terenkripsi (SQLite)")
+                q = st.text_input("Cari (ID / Nama pengirim)", placeholder="Ketik ID atau nama…")
+                items = db_list(q.strip() or None)
+
                 if not items:
-                    st.info("Belum ada submission.")
+                    st.info("Belum ada entri.")
                 else:
-                    # Urutkan terbaru dulu
-                    items = sorted(items, key=lambda x: x.get("ts", ""), reverse=True)
+                    options = [f"{it['ts']} • {it['sender']} • {it['id']}" for it in items]
+                    pick = st.selectbox("Pilih entri untuk didekripsi", options)
+                    chosen = items[options.index(pick)]
 
-                    # Filter pencarian sederhana
-                    st.write("### Daftar Pesan Terenkripsi")
-                    q = st.text_input("Cari (ID / Nama pengirim)", placeholder="Ketik ID atau nama...")
-                    if q:
-                        qlow = q.lower()
-                        items_filtered = [
-                            it for it in items
-                            if qlow in it.get("id", "").lower() or qlow in it.get("sender", "").lower()
-                        ]
-                    else:
-                        items_filtered = items
+                    st.write("**Rincian Entri**")
+                    st.json({
+                        "id": chosen["id"],
+                        "timestamp_utc": chosen["ts"],
+                        "sender": chosen["sender"],
+                    })
 
-                    # Pilih salah satu untuk dibuka
-                    options = [f"{it['ts']} • {it['sender']} • {it['id']}" for it in items_filtered]
-                    if options:
-                        pick = st.selectbox("Pilih entri untuk didekripsi", options)
-                        idx = options.index(pick)
-                        chosen = items_filtered[idx]
+                    if st.button("🔓 Dekripsi Pesan Ini"):
+                        try:
+                            plaintext = aes_gcm_decrypt(chosen["package_b64"], aes_key)
+                            st.success("Dekripsi sukses.")
+                            st.text_area("Plaintext", value=plaintext, height=160)
+                            st.code(chosen["package_b64"], language="text")
+                        except Exception as e:
+                            st.error(f"Gagal dekripsi: {e}")
 
-                        st.write("**Rincian Entri**")
-                        st.json({
-                            "id": chosen["id"],
-                            "timestamp_utc": chosen["ts"],
-                            "sender": chosen["sender"],
-                        })
-
-                        if st.button("🔓 Dekripsi Pesan Ini"):
-                            try:
-                                plaintext = aes_gcm_decrypt(chosen["package_b64"], aes_key)
-                                st.success("Dekripsi sukses.")
-                                st.text_area("Plaintext", value=plaintext, height=160)
-                                st.code(chosen["package_b64"], language="text")
-                            except Exception as e:
-                                st.error(f"Gagal dekripsi: {e}")
-
-                        # Ekspor utilitas
-                        st.download_button(
-                            "⬇️ Unduh Semua Entri (JSONL)",
-                            data="\n".join(json.dumps(it, ensure_ascii=False) for it in items),
-                            file_name="submissions.jsonl",
-                            mime="text/plain",
-                        )
-                    else:
-                        st.info("Tidak ada entri yang cocok dengan pencarian.")
+                    # Ekspor seluruh entri (opsional)
+                    if st.download_button(
+                        "⬇️ Ekspor Semua Entri (JSON)",
+                        data=json.dumps(items, ensure_ascii=False, indent=2),
+                        file_name="submissions_export.json",
+                        mime="application/json",
+                    ):
+                        pass
         else:
             st.error("Password admin salah.")
