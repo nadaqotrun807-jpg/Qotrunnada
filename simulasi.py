@@ -1,12 +1,7 @@
-# 1) (opsional) buat virtual env
-python -m venv .venv
-# Windows:
-.venv\Scripts\activate
-# macOS/Linux:
-source .venv/bin/activate
-
-# 2) install dependensi
-pip install -r requirements.txt
-
-# 3) jalankan app
-streamlit run app.py
+# pastikan berada di folder proyek
+git init
+git add .
+git commit -m "Hybrid RSA–AES Streamlit with timing (SEM PRO ready)"
+git branch -M main
+git remote add origin https://github.com/<username>/hybrid-rsa-aes-streamlit.git
+git push -u origin main
