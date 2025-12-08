@@ -5,13 +5,13 @@ from Crypto.Hash import SHA256
 import time
 
 # =========================
-# Fungsi utilitas RSA
+# Fungsi utilitas
 # =========================
 
 def generate_rsa_keypair(bits: int = 2048):
     """
     Membangkitan sepasang kunci RSA (privat & publik) dalam format PEM.
-    bits: panjang modulus (1024 / 2048 / 3072, dst).
+    bits: panjang modulus (default 2048 bit).
     """
     key = RSA.generate(bits)
     private_key_pem = key.export_key().decode("utf-8")
@@ -21,9 +21,8 @@ def generate_rsa_keypair(bits: int = 2048):
 
 def rsa_encrypt_oaep(plaintext: str, public_key_pem: str):
     """
-    Enkripsi RSA-OAEP.
-    Input  : plaintext (string), public_key_pem (PEM string)
-    Output : ciphertext_hex, elapsed_time (detik)
+    Enkripsi RSA-OAEP (PKCS1_OAEP + SHA-256).
+    Output: ciphertext_hex, waktu_enkripsi (detik)
     """
     if not plaintext:
         raise ValueError("Plaintext tidak boleh kosong.")
@@ -33,8 +32,6 @@ def rsa_encrypt_oaep(plaintext: str, public_key_pem: str):
     public_key = RSA.import_key(public_key_pem)
     cipher = PKCS1_OAEP.new(public_key, hashAlgo=SHA256)
 
-    # Catatan: RSA hanya bisa mengenkripsi pesan dengan panjang terbatas
-    # tergantung ukuran kunci & padding OAEP.
     plaintext_bytes = plaintext.encode("utf-8")
 
     t_start = time.perf_counter()
@@ -43,14 +40,14 @@ def rsa_encrypt_oaep(plaintext: str, public_key_pem: str):
 
     ciphertext_hex = ciphertext_bytes.hex()
     elapsed_time = t_end - t_start
+
     return ciphertext_hex, elapsed_time
 
 
 def rsa_decrypt_oaep(ciphertext_hex: str, private_key_pem: str):
     """
     Dekripsi RSA-OAEP.
-    Input  : ciphertext_hex (hex string), private_key_pem (PEM string)
-    Output : plaintext (string), elapsed_time (detik)
+    Output: plaintext (string), waktu_dekripsi (detik)
     """
     if not ciphertext_hex:
         raise ValueError("Ciphertext tidak boleh kosong.")
@@ -68,6 +65,7 @@ def rsa_decrypt_oaep(ciphertext_hex: str, private_key_pem: str):
 
     plaintext = plaintext_bytes.decode("utf-8")
     elapsed_time = t_end - t_start
+
     return plaintext, elapsed_time
 
 
@@ -76,151 +74,130 @@ def rsa_decrypt_oaep(ciphertext_hex: str, private_key_pem: str):
 # =========================
 
 st.set_page_config(
-    page_title="RSA Tunggal - Enkripsi & Dekripsi",
+    page_title="RSA Tunggal - Kunci, Enkripsi, Dekripsi",
     layout="centered"
 )
 
-st.title("🔐 RSA Tunggal (RSA-OAEP) - Enkripsi & Dekripsi")
+st.title("🔐 RSA Tunggal (RSA-OAEP) - Pembangkitan Kunci, Enkripsi, dan Dekripsi")
 
 st.write(
     """
-    Aplikasi ini melakukan **enkripsi** dan **dekripsi** pesan teks menggunakan 
-    algoritma **RSA** dengan skema **RSA-OAEP (PKCS1_OAEP + SHA-256)**.
-    
-    - Kunci RSA dibangkitkan secara acak dengan panjang modulus tertentu (1024 / 2048 / 3072 bit).
-    - Proses enkripsi menghasilkan ciphertext dalam bentuk **hex**.
-    - Waktu enkripsi dan dekripsi diukur menggunakan `time.perf_counter()` dalam satuan detik.
-    
-    > Catatan: RSA hanya dapat mengenkripsi pesan dengan panjang yang terbatas 
-    > (bergantung pada panjang kunci dan padding OAEP). Untuk data besar, 
-    > biasanya RSA dipakai hanya untuk mengenkripsi kunci simetris (misalnya kunci AES).
+    Aplikasi ini melakukan:
+    1. **Pembangkitan sepasang kunci RSA 2048-bit** (kunci publik & kunci privat),
+    2. **Enkripsi** pesan teks dengan kunci publik (RSA-OAEP + SHA-256),
+    3. **Dekripsi** ciphertext dengan kunci privat.
+
+    Waktu enkripsi dan dekripsi diukur menggunakan `time.perf_counter()` dalam satuan detik.
     """
 )
 
-tab_key, tab_enc, tab_dec = st.tabs(
-    ["🔑 Pembangkitan Kunci RSA", "🔒 Enkripsi RSA Tunggal", "🔓 Dekripsi RSA Tunggal"]
-)
+# Inisialisasi state kunci
+if "private_key_pem" not in st.session_state:
+    st.session_state.private_key_pem = ""
+if "public_key_pem" not in st.session_state:
+    st.session_state.public_key_pem = ""
 
 # =========================
-# Tab 1: Pembangkitan Kunci
+# 1. Pembangkitan Kunci
 # =========================
-with tab_key:
-    st.subheader("Pembangkitan Sepasang Kunci RSA")
+st.header("1. Pembangkitan Kunci RSA 2048-bit")
 
-    bits = st.selectbox(
-        "Pilih Panjang Kunci (modulus)",
-        options=[1024, 2048, 3072],
-        index=1,
-        help="Semakin besar nilai bit, semakin kuat keamanan namun waktu komputasi lebih lama."
-    )
+if st.button("🔑 Bangkitkan Sepasang Kunci RSA 2048-bit", type="primary"):
+    priv_pem, pub_pem = generate_rsa_keypair(bits=2048)
+    st.session_state.private_key_pem = priv_pem
+    st.session_state.public_key_pem = pub_pem
+    st.success("Kunci RSA 2048-bit berhasil dibangkitkan.")
 
-    if "private_key_pem" not in st.session_state:
-        st.session_state.private_key_pem = ""
-    if "public_key_pem" not in st.session_state:
-        st.session_state.public_key_pem = ""
+col1, col2 = st.columns(2)
 
-    if st.button("Bangkitkan Kunci RSA", type="primary"):
-        priv_pem, pub_pem = generate_rsa_keypair(bits)
-        st.session_state.private_key_pem = priv_pem
-        st.session_state.public_key_pem = pub_pem
-
-        st.success(f"Kunci RSA {bits}-bit berhasil dibangkitkan.")
-
-    st.markdown("**Kunci Privat (PEM):**")
-    st.text_area(
-        "Private Key",
-        value=st.session_state.private_key_pem,
-        height=200,
-        key="priv_key_area"
-    )
-
-    st.markdown("**Kunci Publik (PEM):**")
+with col1:
+    st.subheader("Kunci Publik (PEM)")
     st.text_area(
         "Public Key",
         value=st.session_state.public_key_pem,
-        height=200,
-        key="pub_key_area"
+        height=230,
+        key="pub_key_area",
     )
 
-    st.caption(
-        "Simpan kunci privat dengan aman. Kunci publik boleh dibagikan kepada pihak lain "
-        "untuk keperluan enkripsi."
-    )
-
-# =========================
-# Tab 2: Enkripsi
-# =========================
-with tab_enc:
-    st.subheader("Enkripsi RSA Tunggal (RSA-OAEP)")
-
-    plaintext = st.text_area(
-        "Masukkan Plaintext",
-        value="Contoh pesan teks yang akan dienkripsi dengan RSA.",
-        height=150
-    )
-
-    public_key_input = st.text_area(
-        "Masukkan Kunci Publik RSA (PEM)",
-        value=st.session_state.public_key_pem,
-        height=200,
-        help="Gunakan kunci publik hasil pembangkitan di tab sebelumnya, atau paste kunci publik lain."
-    )
-
-    if st.button("Enkripsi dengan RSA", key="btn_encrypt_rsa", type="primary"):
-        try:
-            ciphertext_hex, t_enc = rsa_encrypt_oaep(plaintext, public_key_input)
-
-            st.success("Enkripsi RSA berhasil!")
-
-            st.markdown("**Ciphertext (hex):**")
-            st.code(ciphertext_hex, language="text")
-
-            st.info(f"⏱ Waktu enkripsi RSA: `{t_enc:.6f}` detik")
-
-            st.caption(
-                "Simpan ciphertext di atas. Ciphertext tersebut hanya dapat didekripsi "
-                "menggunakan kunci privat RSA yang sesuai."
-            )
-
-        except ValueError as ve:
-            st.error(f"Input tidak valid: {ve}")
-        except Exception as e:
-            st.error(f"Terjadi kesalahan saat enkripsi: {e}")
-
-# =========================
-# Tab 3: Dekripsi
-# =========================
-with tab_dec:
-    st.subheader("Dekripsi RSA Tunggal (RSA-OAEP)")
-
-    ciphertext_hex_input = st.text_area(
-        "Masukkan Ciphertext (hex)",
-        height=150,
-        help="Paste ciphertext hex hasil enkripsi RSA."
-    )
-
-    private_key_input = st.text_area(
-        "Masukkan Kunci Privat RSA (PEM)",
+with col2:
+    st.subheader("Kunci Privat (PEM)")
+    st.text_area(
+        "Private Key",
         value=st.session_state.private_key_pem,
-        height=200,
-        help="Gunakan kunci privat yang berpasangan dengan kunci publik saat enkripsi."
+        height=230,
+        key="priv_key_area",
     )
 
-    if st.button("Dekripsi dengan RSA", key="btn_decrypt_rsa"):
-        try:
-            plaintext_out, t_dec = rsa_decrypt_oaep(ciphertext_hex_input.strip(), private_key_input)
+st.caption("📌 Kunci publik boleh dibagikan. Kunci privat harus dijaga kerahasiaannya.")
 
-            st.success("Dekripsi RSA berhasil!")
+st.markdown("---")
 
-            st.markdown("**Plaintext Hasil Dekripsi:**")
-            st.code(plaintext_out, language="text")
+# =========================
+# 2. Enkripsi RSA
+# =========================
+st.header("2. Enkripsi RSA Tunggal (RSA-OAEP)")
 
-            st.info(f"⏱ Waktu dekripsi RSA: `{t_dec:.6f}` detik")
+plaintext = st.text_area(
+    "Masukkan Plaintext yang akan dienkripsi",
+    value="Contoh pesan teks untuk enkripsi RSA.",
+    height=120,
+)
 
-        except ValueError as ve:
-            st.error(f"Input tidak valid: {ve}")
-        except Exception as e:
-            st.error(
-                "Terjadi kesalahan saat dekripsi: "
-                f"{e}\n\nPastikan ciphertext, format hex, dan kunci privat sudah benar serta berpasangan."
-            )
+public_key_input = st.text_area(
+    "Gunakan Kunci Publik RSA (PEM)",
+    value=st.session_state.public_key_pem,
+    height=150,
+    help="Secara default diisi kunci publik yang baru dibangkitkan.",
+)
+
+if st.button("🔒 Enkripsi dengan Kunci Publik"):
+    try:
+        ciphertext_hex, t_enc = rsa_encrypt_oaep(plaintext, public_key_input)
+
+        st.success("Enkripsi RSA berhasil.")
+        st.markdown("**Ciphertext (hex):**")
+        st.code(ciphertext_hex, language="text")
+
+        st.info(f"⏱ Waktu enkripsi: `{t_enc:.6f}` detik")
+
+        st.caption(
+            "Simpan ciphertext di atas. Ciphertext ini hanya dapat didekripsi "
+            "dengan kunci privat yang berpasangan."
+        )
+    except Exception as e:
+        st.error(f"Terjadi kesalahan saat enkripsi: {e}")
+
+st.markdown("---")
+
+# =========================
+# 3. Dekripsi RSA
+# =========================
+st.header("3. Dekripsi RSA Tunggal (RSA-OAEP)")
+
+ciphertext_hex_input = st.text_area(
+    "Masukkan Ciphertext (hex) hasil enkripsi RSA",
+    height=120,
+)
+
+private_key_input = st.text_area(
+    "Gunakan Kunci Privat RSA (PEM)",
+    value=st.session_state.private_key_pem,
+    height=150,
+    help="Secara default diisi kunci privat yang berpasangan dengan kunci publik di atas.",
+)
+
+if st.button("🔓 Dekripsi dengan Kunci Privat"):
+    try:
+        plaintext_out, t_dec = rsa_decrypt_oaep(ciphertext_hex_input.strip(), private_key_input)
+
+        st.success("Dekripsi RSA berhasil.")
+        st.markdown("**Plaintext Hasil Dekripsi:**")
+        st.code(plaintext_out, language="text")
+
+        st.info(f"⏱ Waktu dekripsi: `{t_dec:.6f}` detik")
+    except Exception as e:
+        st.error(
+            "Dekripsi gagal. Periksa kembali ciphertext, format hex, "
+            "dan kecocokan kunci privat.\n\n"
+            f"Detail error: {e}"
+        )
