@@ -214,6 +214,7 @@ if btn_decrypt:
         T_dec_list = []
         status_list = []
         P_rec_list = []
+        k_aes_rec_hex_list = []   # ← list baru untuk menyimpan kunci AES hasil dekripsi (hex)
 
         for i, r in enumerate(runs):
             t_dec_start = time.perf_counter()
@@ -221,6 +222,7 @@ if btn_decrypt:
             # Dekripsi kunci AES dengan RSA privat
             cipher_rsa_dec = PKCS1_OAEP.new(st.session_state.rsa_key, hashAlgo=SHA256)
             K_AES_rec = cipher_rsa_dec.decrypt(r["C_key"])
+            k_aes_rec_hex_list.append(K_AES_rec.hex())   # simpan dalam bentuk hex
 
             # Dekripsi ciphertext dengan AES-GCM
             cipher_aes_dec = AES.new(K_AES_rec, AES.MODE_GCM, nonce=r["nonce"])
@@ -243,6 +245,7 @@ if btn_decrypt:
         df_dec = pd.DataFrame({
             "Uji ke-": list(range(1, len(runs) + 1)),
             "T_dec (detik)": T_dec_list,
+            "K_AES_rec (hex)": k_aes_rec_hex_list,
             "Status": status_list,
         })
 
