@@ -166,7 +166,7 @@ if btn_encrypt:
             # ===== TABEL HASIL UJI ENKRIPSI =====
             df_enc = pd.DataFrame({
                 "Uji ke-": list(range(1, N + 1)),
-                "T_enc (ms)": [t * 1000 for t in T_enc_list],
+                "T_enc (detik)": T_enc_list,
             })
 
             st.markdown("### Tabel Hasil Uji Enkripsi Hybrid (N kali)")
@@ -175,9 +175,9 @@ if btn_encrypt:
             # ===== Statistik Enkripsi =====
             avg_T_enc = sum(T_enc_list) / len(T_enc_list)
             st.markdown("### Statistik Waktu Enkripsi Hybrid")
-            st.write(f"Rata-rata waktu enkripsi: **{avg_T_enc * 1000:.3f} ms**")
-            st.write(f"Minimum: {min(T_enc_list) * 1000:.3f} ms")
-            st.write(f"Maksimum: {max(T_enc_list) * 1000:.3f} ms")
+            st.write(f"Rata-rata waktu enkripsi: **{avg_T_enc:.6f} detik**")
+            st.write(f"Minimum: {min(T_enc_list):.6f} detik")
+            st.write(f"Maksimum: {max(T_enc_list):.6f} detik")
 
             # Contoh hasil uji terakhir
             last = runs[-1]
@@ -242,7 +242,7 @@ if btn_decrypt:
         # ===== TABEL HASIL UJI DEKRIPSI =====
         df_dec = pd.DataFrame({
             "Uji ke-": list(range(1, len(runs) + 1)),
-            "T_dec (ms)": [t * 1000 for t in T_dec_list],
+            "T_dec (detik)": T_dec_list,
             "Status": status_list,
         })
 
@@ -252,9 +252,9 @@ if btn_decrypt:
         # ===== Statistik Dekripsi =====
         avg_T_dec = sum(T_dec_list) / len(T_dec_list)
         st.markdown("### Statistik Waktu Dekripsi Hybrid")
-        st.write(f"Rata-rata waktu dekripsi: **{avg_T_dec * 1000:.3f} ms**")
-        st.write(f"Minimum: {min(T_dec_list) * 1000:.3f} ms")
-        st.write(f"Maksimum: {max(T_dec_list) * 1000:.3f} ms")
+        st.write(f"Rata-rata waktu dekripsi: **{avg_T_dec:.6f} detik**")
+        st.write(f"Minimum: {min(T_dec_list):.6f} detik")
+        st.write(f"Maksimum: {max(T_dec_list):.6f} detik")
 
         # Plaintext hasil dekripsi uji terakhir
         st.markdown("### Plaintext Hasil Dekripsi (Uji ke-N)")
