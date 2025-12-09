@@ -3,6 +3,7 @@ from Crypto.PublicKey import RSA
 from Crypto.Cipher import PKCS1_OAEP
 from Crypto.Hash import SHA256
 import time
+import pandas as pd
 
 # =========================
 # Fungsi utilitas
@@ -44,12 +45,13 @@ def rsa_decrypt_oaep(ciphertext_hex: str, private_key_pem: str):
 # =========================
 st.set_page_config(page_title="RSA Tunggal")
 
-st.title("🔐 RSA Tunggal – Enkripsi & Dekripsi dengan Kunci Otomatis")
+st.title("🔐 RSA Tunggal – Enkripsi, Dekripsi & Pengujian Waktu N Kali")
 
 st.write(
     """
-    Kunci publik dan kunci privat **langsung dibangkitkan otomatis** ketika aplikasi dijalankan.
-    Kamu tidak perlu mengisi atau membuatnya sendiri.
+    Kunci publik dan kunci privat dibangkitkan **otomatis** saat aplikasi dijalankan.
+    
+    Tambahan: fitur **jumlah pengujian (N kali)** untuk mengukur performa waktu RSA.
     """
 )
 
@@ -61,18 +63,18 @@ if "private_key_pem" not in st.session_state:
     st.session_state.private_key_pem = priv
     st.session_state.public_key_pem = pub
 
-# Tampilkan kunci
-st.subheader("🔑 Kunci Publik & Privat RSA (Otomatis Terbentuk)")
+# Display keys
+st.subheader("🔑 Kunci Publik & Privat RSA")
 
 col1, col2 = st.columns(2)
 
 with col1:
-    st.markdown("**Kunci Publik (PEM):**")
-    st.code(st.session_state.public_key_pem, language="text")
+    st.markdown("**Kunci Publik:**")
+    st.code(st.session_state.public_key_pem)
 
 with col2:
-    st.markdown("**Kunci Privat (PEM):**")
-    st.code(st.session_state.private_key_pem, language="text")
+    st.markdown("**Kunci Privat:**")
+    st.code(st.session_state.private_key_pem)
 
 st.divider()
 
@@ -83,14 +85,35 @@ st.subheader("🔒 Enkripsi RSA")
 
 plaintext = st.text_area("Masukkan plaintext:", "Contoh pesan teks.")
 
-if st.button("Enkripsi"):
-    ciphertext_hex, t_enc = rsa_encrypt_oaep(plaintext, st.session_state.public_key_pem)
+# Jumlah pengujian
+N = st.number_input(
+    "Masukkan jumlah pengujian (N):",
+    min_value=1,
+    max_value=100,
+    value=5,
+    step=1
+)
 
-    st.success("Enkripsi berhasil!")
+if st.button("Enkripsi"):
+    hasil = []
+    ciphertext_hex, _ = rsa_encrypt_oaep(plaintext, st.session_state.public_key_pem)
+
+    for i in range(N):
+        _, waktu = rsa_encrypt_oaep(plaintext, st.session_state.public_key_pem)
+        hasil.append({"Pengujian Ke-": i+1, "Waktu Enkripsi (detik)": waktu})
+
+    df_hasil = pd.DataFrame(hasil)
+    rata2_time = df_hasil["Waktu Enkripsi (detik)"].mean()
+
+    st.success("Enkripsi selesai.")
+
     st.markdown("**Ciphertext (hex):**")
     st.code(ciphertext_hex)
 
-    st.info(f"⏱ Waktu enkripsi: {t_enc:.6f} detik")
+    st.markdown("### 📊 Tabel Hasil Pengujian Enkripsi")
+    st.dataframe(df_hasil, use_container_width=True)
+
+    st.info(f"⏱ Rata-rata waktu enkripsi: `{rata2_time:.6f}` detik")
 
 st.divider()
 
@@ -101,15 +124,35 @@ st.subheader("🔓 Dekripsi RSA")
 
 cipher_input = st.text_area("Masukkan ciphertext (hex):")
 
+N_dec = st.number_input(
+    "Jumlah pengujian dekripsi (N):",
+    min_value=1,
+    max_value=100,
+    value=5,
+    step=1,
+    key="dec_n"
+)
+
 if st.button("Dekripsi"):
     try:
-        plaintext_out, t_dec = rsa_decrypt_oaep(cipher_input, st.session_state.private_key_pem)
-
+        plaintext_out, _ = rsa_decrypt_oaep(cipher_input, st.session_state.private_key_pem)
         st.success("Dekripsi berhasil!")
         st.markdown("**Hasil plaintext:**")
         st.code(plaintext_out)
 
-        st.info(f"⏱ Waktu dekripsi: {t_dec:.6f} detik")
+        # Lakukan N kali uji waktu dekripsi
+        hasil_dec = []
+        for i in range(N_dec):
+            _, waktu_dec = rsa_decrypt_oaep(cipher_input, st.session_state.private_key_pem)
+            hasil_dec.append({"Pengujian Ke-": i+1, "Waktu Dekripsi (detik)": waktu_dec})
+
+        df_dec = pd.DataFrame(hasil_dec)
+        rata2_dec = df_dec["Waktu Dekripsi (detik)"].mean()
+
+        st.markdown("### 📊 Tabel Hasil Pengujian Dekripsi")
+        st.dataframe(df_dec, use_container_width=True)
+
+        st.info(f"⏱ Rata-rata waktu dekripsi: `{rata2_dec:.6f}` detik")
 
     except Exception as e:
         st.error(f"Dekripsi gagal: {e}")
