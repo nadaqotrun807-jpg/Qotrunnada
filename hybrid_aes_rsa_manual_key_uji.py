@@ -1,18 +1,19 @@
-# hybrid_aes_rsa_manual_key_uji.py
+# hybrid_aes_rsa_manual_key_uji_cbc.py
 # Jalankan dengan:
 #   pip install streamlit pycryptodome pandas
-#   streamlit run hybrid_aes_rsa_manual_key_uji.py
+#   streamlit run hybrid_aes_rsa_manual_key_uji_cbc.py
 
 import streamlit as st
 from Crypto.Cipher import AES, PKCS1_OAEP
 from Crypto.PublicKey import RSA
 from Crypto.Random import get_random_bytes
 from Crypto.Hash import SHA256
+from Crypto.Util.Padding import pad, unpad
 import time
 import pandas as pd
 
-st.set_page_config(page_title="Hybrid AES–RSA dengan Uji Berulang", layout="wide")
-st.title("Simulasi Hybrid AES–RSA dengan Kunci AES Manual, Pengulangan Uji, dan Tabel Waktu")
+st.set_page_config(page_title="Hybrid AES–RSA (AES-CBC) dengan Uji Berulang", layout="wide")
+st.title("Simulasi Hybrid AES–RSA (AES-128 CBC) dengan Kunci AES Manual, Pengulangan Uji, dan Tabel Waktu")
 
 # =========================
 # Sidebar: Pengaturan Uji
@@ -25,7 +26,7 @@ N = st.sidebar.number_input(
     max_value=100,
     value=5,
     step=1,
-    help="Setiap uji memakai plaintext dan kunci AES yang sama, dengan nonce baru."
+    help="Setiap uji memakai plaintext dan kunci AES yang sama, dengan IV baru."
 )
 
 rsa_bits = st.sidebar.selectbox(
@@ -35,7 +36,7 @@ rsa_bits = st.sidebar.selectbox(
     help="RSA 2048 bit sudah cukup untuk simulasi skripsi."
 )
 
-st.sidebar.caption("RSA untuk enkripsi kunci AES, AES-128 untuk enkripsi pesan.")
+st.sidebar.caption("RSA untuk enkripsi kunci AES, AES-128 CBC untuk enkripsi pesan.")
 
 # =========================
 # Generate RSA sekali, simpan di session_state
@@ -110,7 +111,7 @@ btn_encrypt = col_btn1.button("🔒 Enkripsi Hybrid (N kali)")
 btn_decrypt = col_btn2.button("🔓 Dekripsi Hybrid (N kali)")
 
 # =========================
-# PROSES ENKRIPSI HYBRID (AES + RSA) N kali
+# PROSES ENKRIPSI HYBRID (AES-CBC + RSA) N kali
 # =========================
 if btn_encrypt:
     if not plaintext:
@@ -128,6 +129,7 @@ if btn_encrypt:
         else:
             st.session_state.plaintext = plaintext  # simpan
             P_bytes = plaintext.encode("utf-8")
+            P_padded = pad(P_bytes, AES.block_size)  # padding PKCS7
 
             runs = []
             T_enc_list = []
@@ -135,10 +137,10 @@ if btn_encrypt:
             for i in range(N):
                 t_enc_start = time.perf_counter()
 
-                # AES-GCM: enkripsi plaintext dengan kunci AES yang sama
-                cipher_aes = AES.new(K_AES, AES.MODE_GCM)
-                C_text, tag = cipher_aes.encrypt_and_digest(P_bytes)
-                nonce = cipher_aes.nonce
+                # AES-CBC: enkripsi plaintext dengan kunci AES yang sama
+                iv = get_random_bytes(16)
+                cipher_aes = AES.new(K_AES, AES.MODE_CBC, iv=iv)
+                C_text = cipher_aes.encrypt(P_padded)
 
                 # RSA-OAEP: enkripsi kunci AES dengan kunci publik RSA
                 cipher_rsa = PKCS1_OAEP.new(st.session_state.rsa_key.publickey(), hashAlgo=SHA256)
@@ -152,8 +154,7 @@ if btn_encrypt:
                     "K_AES": K_AES,
                     "C_text": C_text,
                     "C_key": C_key,
-                    "nonce": nonce,
-                    "tag": tag,
+                    "iv": iv,
                 })
 
             # Simpan ke session_state untuk dipakai dekripsi
@@ -192,14 +193,11 @@ if btn_encrypt:
             st.write("**Cipherkey (C_key) terenkripsi RSA (hex)**")
             st.code(last["C_key"].hex(), language="text")
 
-            st.write("**Nonce (hex)**")
-            st.code(last["nonce"].hex(), language="text")
-
-            st.write("**Tag (hex)**")
-            st.code(last["tag"].hex(), language="text")
+            st.write("**IV (hex)**")
+            st.code(last["iv"].hex(), language="text")
 
 # =========================
-# PROSES DEKRIPSI HYBRID (RSA + AES) N kali
+# PROSES DEKRIPSI HYBRID (RSA + AES-CBC) N kali
 # =========================
 if btn_decrypt:
     runs = st.session_state.get("runs", [])
@@ -214,7 +212,7 @@ if btn_decrypt:
         T_dec_list = []
         status_list = []
         P_rec_list = []
-        k_aes_rec_hex_list = []   # ← list baru untuk menyimpan kunci AES hasil dekripsi (hex)
+        k_aes_rec_hex_list = []
 
         for i, r in enumerate(runs):
             t_dec_start = time.perf_counter()
@@ -222,11 +220,12 @@ if btn_decrypt:
             # Dekripsi kunci AES dengan RSA privat
             cipher_rsa_dec = PKCS1_OAEP.new(st.session_state.rsa_key, hashAlgo=SHA256)
             K_AES_rec = cipher_rsa_dec.decrypt(r["C_key"])
-            k_aes_rec_hex_list.append(K_AES_rec.hex())   # simpan dalam bentuk hex
+            k_aes_rec_hex_list.append(K_AES_rec.hex())
 
-            # Dekripsi ciphertext dengan AES-GCM
-            cipher_aes_dec = AES.new(K_AES_rec, AES.MODE_GCM, nonce=r["nonce"])
-            P_rec_bytes = cipher_aes_dec.decrypt_and_verify(r["C_text"], r["tag"])
+            # Dekripsi ciphertext dengan AES-CBC
+            cipher_aes_dec = AES.new(K_AES_rec, AES.MODE_CBC, iv=r["iv"])
+            P_padded_rec = cipher_aes_dec.decrypt(r["C_text"])
+            P_rec_bytes = unpad(P_padded_rec, AES.block_size)
             P_rec = P_rec_bytes.decode("utf-8", errors="replace")
 
             t_dec_end = time.perf_counter()
