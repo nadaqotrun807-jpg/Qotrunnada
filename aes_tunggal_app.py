@@ -1,6 +1,7 @@
 import streamlit as st
 from Crypto.Cipher import AES
 from Crypto.Random import get_random_bytes
+from Crypto.Util.Padding import pad, unpad
 import hashlib
 import time
 import pandas as pd
@@ -20,43 +21,45 @@ def derive_key_from_password(password: str) -> bytes:
     return sha256_hash[:16]  # 16 byte = 128 bit
 
 
-def aes_encrypt_gcm(plaintext: str, password: str):
+def aes_encrypt_cbc(plaintext: str, password: str):
     """
-    Enkripsi AES-128 GCM.
-    Output: ciphertext_hex, nonce_hex, tag_hex, elapsed_time (detik)
+    Enkripsi AES-128 CBC + PKCS7 padding.
+    Output: ciphertext_hex, iv_hex, elapsed_time (detik)
     """
     key = derive_key_from_password(password)
     plaintext_bytes = plaintext.encode("utf-8")
 
+    # PKCS7 padding agar panjang kelipatan 16 byte
+    padded = pad(plaintext_bytes, AES.block_size)
+
+    iv_bytes = get_random_bytes(16)
+
     t_start = time.perf_counter()
-    cipher = AES.new(key, AES.MODE_GCM)
-    ciphertext_bytes, tag_bytes = cipher.encrypt_and_digest(plaintext_bytes)
+    cipher = AES.new(key, AES.MODE_CBC, iv=iv_bytes)
+    ciphertext_bytes = cipher.encrypt(padded)
     t_end = time.perf_counter()
 
-    nonce_bytes = cipher.nonce
-
     ciphertext_hex = ciphertext_bytes.hex()
-    nonce_hex = nonce_bytes.hex()
-    tag_hex = tag_bytes.hex()
+    iv_hex = iv_bytes.hex()
     elapsed_time = t_end - t_start
 
-    return ciphertext_hex, nonce_hex, tag_hex, elapsed_time
+    return ciphertext_hex, iv_hex, elapsed_time
 
 
-def aes_decrypt_gcm(ciphertext_hex: str, nonce_hex: str, tag_hex: str, password: str):
+def aes_decrypt_cbc(ciphertext_hex: str, iv_hex: str, password: str):
     """
-    Dekripsi AES-128 GCM.
+    Dekripsi AES-128 CBC + PKCS7 unpadding.
     Output: plaintext (string), elapsed_time (detik)
     """
     key = derive_key_from_password(password)
 
     ciphertext_bytes = bytes.fromhex(ciphertext_hex)
-    nonce_bytes = bytes.fromhex(nonce_hex)
-    tag_bytes = bytes.fromhex(tag_hex)
+    iv_bytes = bytes.fromhex(iv_hex)
 
     t_start = time.perf_counter()
-    cipher = AES.new(key, AES.MODE_GCM, nonce=nonce_bytes)
-    plaintext_bytes = cipher.decrypt_and_verify(ciphertext_bytes, tag_bytes)
+    cipher = AES.new(key, AES.MODE_CBC, iv=iv_bytes)
+    padded_plaintext = cipher.decrypt(ciphertext_bytes)
+    plaintext_bytes = unpad(padded_plaintext, AES.block_size)
     t_end = time.perf_counter()
 
     plaintext = plaintext_bytes.decode("utf-8")
@@ -74,14 +77,17 @@ st.set_page_config(
     layout="centered"
 )
 
-st.title("🔐 AES Tunggal (AES-128 GCM) – Enkripsi, Dekripsi & Pengujian Waktu N Kali")
+st.title("🔐 AES Tunggal (AES-128 CBC) – Enkripsi, Dekripsi & Pengujian Waktu N Kali")
 
 st.write(
     """
     Aplikasi ini melakukan:
-    1. **Enkripsi** pesan teks dengan AES-128 GCM berbasis password,
+    1. **Enkripsi** pesan teks dengan AES-128 CBC berbasis password,
     2. **Dekripsi** ciphertext dengan password yang sama,
     3. **Pengujian waktu N kali** untuk enkripsi dan dekripsi (tabel + rata-rata).
+
+    Mode CBC menggunakan IV (Initialization Vector) 16 byte dan padding PKCS7,
+    sehingga panjang ciphertext selalu kelipatan 16 byte.
     """
 )
 
@@ -91,11 +97,11 @@ tab_enc, tab_dec = st.tabs(["🔒 Enkripsi & Pengujian", "🔓 Dekripsi & Penguj
 # TAB 1: ENKRIPSI + PENGUJIAN
 # =========================
 with tab_enc:
-    st.subheader("Enkripsi AES Tunggal (AES-128 GCM) + Pengujian N Kali")
+    st.subheader("Enkripsi AES Tunggal (AES-128 CBC) + Pengujian N Kali")
 
     plaintext = st.text_area(
         "Masukkan Plaintext",
-        value="Contoh pesan teks yang akan dienkripsi dengan AES.",
+        value="Contoh pesan teks yang akan dienkripsi dengan AES-CBC.",
         height=140
     )
 
@@ -122,18 +128,16 @@ with tab_enc:
             try:
                 hasil_enc = []
                 ciphertext_hex_final = ""
-                nonce_hex_final = ""
-                tag_hex_final = ""
+                iv_hex_final = ""
 
                 # Lakukan enkripsi N kali, simpan waktu tiap uji
                 for i in range(N_enc):
-                    c_hex, n_hex, t_hex, t_enc = aes_encrypt_gcm(plaintext, password_enc)
+                    c_hex, iv_hex, t_enc = aes_encrypt_cbc(plaintext, password_enc)
 
                     # Simpan hasil enkripsi dari uji pertama (atau terakhir) untuk ditampilkan
                     if i == 0:
                         ciphertext_hex_final = c_hex
-                        nonce_hex_final = n_hex
-                        tag_hex_final = t_hex
+                        iv_hex_final = iv_hex
 
                     hasil_enc.append({
                         "Pengujian Ke-": i + 1,
@@ -148,11 +152,8 @@ with tab_enc:
                 st.markdown("**Ciphertext (hex) – diambil dari pengujian pertama:**")
                 st.code(ciphertext_hex_final, language="text")
 
-                st.markdown("**Nonce (hex):**")
-                st.code(nonce_hex_final, language="text")
-
-                st.markdown("**Tag (hex):**")
-                st.code(tag_hex_final, language="text")
+                st.markdown("**IV (Initialization Vector) (hex):**")
+                st.code(iv_hex_final, language="text")
 
                 st.markdown("### 📊 Tabel Hasil Pengujian Enkripsi AES")
                 st.dataframe(df_enc, use_container_width=True)
@@ -160,7 +161,7 @@ with tab_enc:
                 st.info(f"⏱ Rata-rata waktu enkripsi: `{rata2_enc:.6f}` detik")
 
                 st.caption(
-                    "Simpan ciphertext, nonce, dan tag di atas. Nilai tersebut akan digunakan pada proses dekripsi."
+                    "Simpan ciphertext dan IV di atas. Nilai tersebut akan digunakan pada proses dekripsi."
                 )
 
             except Exception as e:
@@ -170,22 +171,17 @@ with tab_enc:
 # TAB 2: DEKRIPSI + PENGUJIAN
 # =========================
 with tab_dec:
-    st.subheader("Dekripsi AES Tunggal (AES-128 GCM) + Pengujian N Kali")
+    st.subheader("Dekripsi AES Tunggal (AES-128 CBC) + Pengujian N Kali")
 
     ciphertext_hex_input = st.text_area(
         "Masukkan Ciphertext (hex)",
         height=120,
-        help="Gunakan ciphertext (hex) hasil enkripsi AES."
+        help="Gunakan ciphertext (hex) hasil enkripsi AES-CBC."
     )
 
-    nonce_hex_input = st.text_input(
-        "Masukkan Nonce (hex)",
-        help="Nonce yang dihasilkan saat enkripsi."
-    )
-
-    tag_hex_input = st.text_input(
-        "Masukkan Tag (hex)",
-        help="Tag autentikasi yang dihasilkan saat enkripsi."
+    iv_hex_input = st.text_input(
+        "Masukkan IV (hex) 16 byte",
+        help="IV yang dihasilkan saat enkripsi."
     )
 
     password_dec = st.text_input(
@@ -203,17 +199,16 @@ with tab_dec:
     )
 
     if st.button("🔓 Dekripsi & Uji N Kali"):
-        if not ciphertext_hex_input or not nonce_hex_input or not tag_hex_input:
-            st.error("Ciphertext, nonce, dan tag wajib diisi.")
+        if not ciphertext_hex_input or not iv_hex_input:
+            st.error("Ciphertext dan IV wajib diisi.")
         elif not password_dec:
             st.error("Password tidak boleh kosong.")
         else:
             try:
                 # Dekripsi sekali dulu untuk memastikan data valid & tampilkan plaintext
-                plaintext_out, t_first = aes_decrypt_gcm(
+                plaintext_out, t_first = aes_decrypt_cbc(
                     ciphertext_hex_input.strip(),
-                    nonce_hex_input.strip(),
-                    tag_hex_input.strip(),
+                    iv_hex_input.strip(),
                     password_dec
                 )
 
@@ -225,10 +220,9 @@ with tab_dec:
                 # Pengujian N kali waktu dekripsi
                 hasil_dec = []
                 for i in range(N_dec):
-                    _, t_dec = aes_decrypt_gcm(
+                    _, t_dec = aes_decrypt_cbc(
                         ciphertext_hex_input.strip(),
-                        nonce_hex_input.strip(),
-                        tag_hex_input.strip(),
+                        iv_hex_input.strip(),
                         password_dec
                     )
                     hasil_dec.append({
@@ -247,7 +241,7 @@ with tab_dec:
             except ValueError:
                 st.error(
                     "Dekripsi gagal: kemungkinan password salah, "
-                    "nonce/tag tidak sesuai, atau data telah berubah (MAC check failed)."
+                    "IV tidak sesuai, atau ciphertext rusak (padding error)."
                 )
             except Exception as e:
                 st.error(f"Terjadi kesalahan saat dekripsi/pengujian: {e}")
