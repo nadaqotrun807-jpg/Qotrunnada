@@ -78,16 +78,47 @@ if "rsa_key" not in st.session_state or st.session_state.get("rsa_bits") != rsa_
     st.session_state.aes_key_hex = ""
 
 # =========================
-# Tampilkan kunci publik & privat RSA (opsional, dalam expander)
+# Tampilkan parameter RSA: n, e, d, p, q
 # =========================
-with st.expander("🔑 Tampilkan Kunci Publik & Privat RSA (PEM)"):
-    col1, col2 = st.columns(2)
-    with col1:
-        st.markdown("**Kunci Publik (K_pub)**")
-        st.code(st.session_state.pub_pem, language="text")
-    with col2:
-        st.markdown("**Kunci Privat (K_priv)**")
-        st.code(st.session_state.priv_pem, language="text")
+st.subheader("🔑 Parameter Kunci RSA (n, e, d, p, q)")
+
+rsa_key = st.session_state.rsa_key
+
+n = rsa_key.n
+e = rsa_key.e
+d = rsa_key.d
+p = rsa_key.p
+q = rsa_key.q
+
+col_pub, col_priv = st.columns(2)
+
+with col_pub:
+    st.markdown("### 🔵 Kunci Publik")
+    st.markdown("**Modulus (n) – decimal:**")
+    st.code(str(n))
+
+    st.markdown("**Modulus (n) – hexadecimal:**")
+    st.code(hex(n))
+
+    st.markdown("**Eksponen Publik (e):**")
+    st.code(str(e))
+
+with col_priv:
+    st.markdown("### 🔴 Kunci Privat")
+    st.markdown("**Eksponen Privat (d):**")
+    st.code(str(d))
+
+    st.markdown("**Bilangan Prima p (decimal):**")
+    st.code(str(p))
+
+    st.markdown("**Bilangan Prima q (decimal):**")
+    st.code(str(q))
+
+    st.markdown("**Bilangan Prima p (hex):**")
+    st.code(hex(p))
+
+    st.markdown("**Bilangan Prima q (hex):**")
+    st.code(hex(q))
 
 st.markdown("---")
 
