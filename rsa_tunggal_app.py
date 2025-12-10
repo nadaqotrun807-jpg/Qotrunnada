@@ -43,15 +43,15 @@ def rsa_decrypt_oaep(ciphertext_hex: str, private_key_pem: str):
 # =========================
 # Streamlit App
 # =========================
-st.set_page_config(page_title="RSA Tunggal")
 
-st.title("🔐 RSA Tunggal – Enkripsi, Dekripsi & Pengujian Waktu N Kali")
+st.set_page_config(page_title="RSA Tunggal – Tampil n, e, d, p, q")
+
+st.title("🔐 RSA Tunggal – Enkripsi, Dekripsi & Parameter Kunci (n, e, d, p, q)")
 
 st.write(
     """
-    Kunci publik dan kunci privat dibangkitkan **otomatis** saat aplikasi dijalankan.
-    
-    Tambahan: fitur **jumlah pengujian (N kali)** untuk mengukur performa waktu RSA.
+    Aplikasi ini menampilkan **struktur matematika kunci RSA lengkap**, serta
+    fitur enkripsi, dekripsi, dan pengujian waktu N kali.
     """
 )
 
@@ -63,35 +63,67 @@ if "private_key_pem" not in st.session_state:
     st.session_state.private_key_pem = priv
     st.session_state.public_key_pem = pub
 
-# Display keys
-st.subheader("🔑 Kunci Publik & Privat RSA")
+# Import RSA objects
+rsa_priv = RSA.import_key(st.session_state.private_key_pem)
+rsa_pub = RSA.import_key(st.session_state.public_key_pem)
 
-col1, col2 = st.columns(2)
+# =========================
+# Ambil parameter matematis
+# =========================
 
-with col1:
-    st.markdown("**Kunci Publik:**")
-    st.code(st.session_state.public_key_pem)
+n = rsa_pub.n
+e = rsa_pub.e
+d = rsa_priv.d
+p = rsa_priv.p
+q = rsa_priv.q
 
-with col2:
-    st.markdown("**Kunci Privat:**")
-    st.code(st.session_state.private_key_pem)
+# =========================
+# Tampilkan parameter RSA
+# =========================
+
+st.subheader("🔑 Parameter Kunci Publik dan Privat RSA")
+
+st.markdown("### 🔵 Kunci Publik (n & e)")
+st.markdown("**Modulus (n) – decimal:**")
+st.code(str(n))
+
+st.markdown("**Modulus (n) – hexadecimal:**")
+st.code(hex(n))
+
+st.markdown("**Eksponen Publik (e):**")
+st.code(str(e))
+
+
+st.markdown("### 🔴 Kunci Privat (d, p, q)")
+st.markdown("**Eksponen Privat (d):**")
+st.code(str(d))
+
+st.markdown("**Bilangan Prima p – decimal:**")
+st.code(str(p))
+
+st.markdown("**Bilangan Prima q – decimal:**")
+st.code(str(q))
+
+st.markdown("**Bilangan Prima p – hex:**")
+st.code(hex(p))
+
+st.markdown("**Bilangan Prima q – hex:**")
+st.code(hex(q))
 
 st.divider()
+
 
 # =========================
 # Enkripsi
 # =========================
+
 st.subheader("🔒 Enkripsi RSA")
 
 plaintext = st.text_area("Masukkan plaintext:", "Contoh pesan teks.")
 
-# Jumlah pengujian
 N = st.number_input(
     "Masukkan jumlah pengujian (N):",
-    min_value=1,
-    max_value=100,
-    value=5,
-    step=1
+    min_value=1, max_value=100, value=5, step=1
 )
 
 if st.button("Enkripsi"):
@@ -100,7 +132,7 @@ if st.button("Enkripsi"):
 
     for i in range(N):
         _, waktu = rsa_encrypt_oaep(plaintext, st.session_state.public_key_pem)
-        hasil.append({"Pengujian Ke-": i+1, "Waktu Enkripsi (detik)": waktu})
+        hasil.append({"Pengujian Ke-": i + 1, "Waktu Enkripsi (detik)": waktu})
 
     df_hasil = pd.DataFrame(hasil)
     rata2_time = df_hasil["Waktu Enkripsi (detik)"].mean()
@@ -117,19 +149,18 @@ if st.button("Enkripsi"):
 
 st.divider()
 
+
 # =========================
 # Dekripsi
 # =========================
+
 st.subheader("🔓 Dekripsi RSA")
 
 cipher_input = st.text_area("Masukkan ciphertext (hex):")
 
 N_dec = st.number_input(
     "Jumlah pengujian dekripsi (N):",
-    min_value=1,
-    max_value=100,
-    value=5,
-    step=1,
+    min_value=1, max_value=100, value=5, step=1,
     key="dec_n"
 )
 
@@ -137,10 +168,8 @@ if st.button("Dekripsi"):
     try:
         plaintext_out, _ = rsa_decrypt_oaep(cipher_input, st.session_state.private_key_pem)
         st.success("Dekripsi berhasil!")
-        st.markdown("**Hasil plaintext:**")
         st.code(plaintext_out)
 
-        # Lakukan N kali uji waktu dekripsi
         hasil_dec = []
         for i in range(N_dec):
             _, waktu_dec = rsa_decrypt_oaep(cipher_input, st.session_state.private_key_pem)
