@@ -1,8 +1,3 @@
-# hybrid_aes_rsa_full_process.py
-# Jalankan:
-# pip install streamlit pycryptodome pandas
-# streamlit run hybrid_aes_rsa_full_process.py
-
 import streamlit as st
 from Crypto.Cipher import AES, PKCS1_OAEP
 from Crypto.PublicKey import RSA
@@ -12,157 +7,149 @@ from Crypto.Util.Padding import pad, unpad
 import time
 import pandas as pd
 
+# =========================
+# CONFIG
+# =========================
 st.set_page_config(
-    page_title="Hybrid AES–RSA Full Process Timing",
+    page_title="Hybrid AES–RSA",
     layout="wide"
 )
 
-st.title("🔐 Hybrid AES–RSA (FULL PROCESS TIMING)")
-
-st.write("""
-Pengukuran waktu mencakup:
-- Generate RSA key
-- Generate AES key
-- Padding
-- Generate IV
-- AES Encryption
-- RSA Encryption
-""")
+st.title("Hybrid AES–RSA (AES-128 CBC) + Pengujian Waktu")
 
 # =========================
-# INPUT
+# PARAMETER
 # =========================
-N = st.number_input("Jumlah pengujian (N)", 1, 50, 5)
-rsa_bits = st.selectbox("Panjang RSA (bit)", [2048, 3072, 4096])
-plaintext = st.text_area("Plaintext", height=120)
-
-btn_enc = st.button("🔒 Enkripsi Hybrid (Full Process)")
-btn_dec = st.button("🔓 Dekripsi Hybrid")
+N = st.sidebar.number_input("Jumlah Uji (N)", 1, 100, 5)
+rsa_bits = st.sidebar.selectbox("RSA Bit", [2048, 3072, 4096])
 
 # =========================
-# FUNGSI FULL ENKRIPSI
+# GENERATE RSA
 # =========================
-def hybrid_encrypt_full(P_bytes, rsa_bits):
+if "rsa_key" not in st.session_state:
+    st.session_state.rsa_key = RSA.generate(rsa_bits)
 
+rsa_key = st.session_state.rsa_key
+
+# =========================
+# INPUT AES KEY
+# =========================
+st.subheader("Kunci AES")
+
+if st.button("Generate AES Key"):
+    st.session_state.aes_key = get_random_bytes(16).hex()
+
+aes_key_hex = st.text_input("AES Key (hex)", value=st.session_state.get("aes_key", ""))
+
+# =========================
+# INPUT PLAINTEXT
+# =========================
+plaintext = st.text_area("Plaintext", "Contoh pesan hybrid AES RSA")
+
+# =========================
+# FUNGSI ENKRIPSI (FULL TIME)
+# =========================
+def hybrid_encrypt_once(K_AES, P_bytes, rsa_key):
     t_start = time.perf_counter()
 
-    # 1. Generate RSA key
-    rsa_key = RSA.generate(rsa_bits)
+    # Padding
+    padded = pad(P_bytes, AES.block_size)
 
-    # 2. Generate AES key
-    K_AES = get_random_bytes(16)
-
-    # 3. Padding
-    P_padded = pad(P_bytes, AES.block_size)
-
-    # 4. AES Encryption
+    # AES
     iv = get_random_bytes(16)
     cipher_aes = AES.new(K_AES, AES.MODE_CBC, iv=iv)
-    C_text = cipher_aes.encrypt(P_padded)
+    C_text = cipher_aes.encrypt(padded)
 
-    # 5. RSA Encryption
+    # RSA encrypt key
     cipher_rsa = PKCS1_OAEP.new(rsa_key.publickey(), hashAlgo=SHA256)
     C_key = cipher_rsa.encrypt(K_AES)
 
     t_end = time.perf_counter()
-
-    return rsa_key, K_AES, C_text, C_key, iv, (t_end - t_start)
+    return C_text, C_key, iv, (t_end - t_start)
 
 
 # =========================
-# FUNGSI DEKRIPSI
+# FUNGSI DEKRIPSI (FULL TIME)
 # =========================
-def hybrid_decrypt(C_text, C_key, iv, rsa_key):
-
+def hybrid_decrypt_once(C_text, C_key, iv, rsa_key):
     t_start = time.perf_counter()
 
+    # RSA decrypt key
     cipher_rsa = PKCS1_OAEP.new(rsa_key, hashAlgo=SHA256)
     K_AES = cipher_rsa.decrypt(C_key)
 
+    # AES decrypt
     cipher_aes = AES.new(K_AES, AES.MODE_CBC, iv=iv)
-    P_padded = cipher_aes.decrypt(C_text)
-    P = unpad(P_padded, AES.block_size)
+    padded = cipher_aes.decrypt(C_text)
+
+    # Unpad
+    P = unpad(padded, AES.block_size)
 
     t_end = time.perf_counter()
-
-    return P.decode(), (t_end - t_start)
+    return K_AES, P, (t_end - t_start)
 
 
 # =========================
 # ENKRIPSI
 # =========================
-if btn_enc:
-    if not plaintext:
-        st.error("Plaintext kosong")
+if st.button("ENKRIPSI"):
+    if not plaintext or not aes_key_hex:
+        st.warning("Isi plaintext & key dulu")
     else:
+        K_AES = bytes.fromhex(aes_key_hex)
         P_bytes = plaintext.encode()
 
         runs = []
-        times = []
+        T_enc = []
 
         for i in range(N):
-            rsa_key, K_AES, C_text, C_key, iv, t = hybrid_encrypt_full(P_bytes, rsa_bits)
+            C_text, C_key, iv, t = hybrid_encrypt_once(K_AES, P_bytes, rsa_key)
 
-            runs.append({
-                "rsa_key": rsa_key,
-                "C_text": C_text,
-                "C_key": C_key,
-                "iv": iv
-            })
-
-            times.append(t)
+            T_enc.append(t)
+            runs.append((C_text, C_key, iv))
 
         st.session_state.runs = runs
+        st.session_state.plaintext = plaintext
 
         df = pd.DataFrame({
-            "Uji": list(range(1, N+1)),
-            "Waktu Enkripsi": times
+            "Uji": range(1, N+1),
+            "T_enc": T_enc
         })
 
-        st.success("Enkripsi selesai")
+        st.write(df)
+        st.success(f"Rata-rata: {sum(T_enc)/len(T_enc):.6f} detik")
 
-        st.dataframe(df)
-        st.info(f"Rata-rata: {df['Waktu Enkripsi'].mean():.6f} detik")
-
+        # tampilkan contoh
         last = runs[-1]
-        st.markdown("### Contoh Output (Uji terakhir)")
-        st.code(last["C_text"].hex())
-        st.code(last["C_key"].hex())
-        st.code(last["iv"].hex())
+        st.code(last[0].hex(), language="text")
+        st.code(last[1].hex(), language="text")
+        st.code(last[2].hex(), language="text")
 
 
 # =========================
 # DEKRIPSI
 # =========================
-if btn_dec:
-    runs = st.session_state.get("runs", [])
-
-    if not runs:
-        st.error("Belum ada data enkripsi")
+if st.button("DEKRIPSI"):
+    if "runs" not in st.session_state:
+        st.warning("Lakukan enkripsi dulu")
     else:
-        times = []
-        plaintexts = []
+        runs = st.session_state.runs
+        P_ref = st.session_state.plaintext.encode()
 
-        for r in runs:
-            P, t = hybrid_decrypt(
-                r["C_text"],
-                r["C_key"],
-                r["iv"],
-                r["rsa_key"]
-            )
+        T_dec = []
+        status = []
 
-            plaintexts.append(P)
-            times.append(t)
+        for C_text, C_key, iv in runs:
+            K_AES, P, t = hybrid_decrypt_once(C_text, C_key, iv, rsa_key)
+
+            T_dec.append(t)
+            status.append("Valid" if P == P_ref else "Tidak Valid")
 
         df = pd.DataFrame({
-            "Uji": list(range(1, len(runs)+1)),
-            "Waktu Dekripsi": times
+            "Uji": range(1, len(runs)+1),
+            "T_dec": T_dec,
+            "Status": status
         })
 
-        st.success("Dekripsi selesai")
-
-        st.dataframe(df)
-        st.info(f"Rata-rata: {df['Waktu Dekripsi'].mean():.6f} detik")
-
-        st.markdown("### Plaintext hasil dekripsi")
-        st.code(plaintexts[-1])
+        st.write(df)
+        st.success(f"Rata-rata: {sum(T_dec)/len(T_dec):.6f} detik")
