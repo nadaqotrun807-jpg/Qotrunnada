@@ -10,9 +10,6 @@ import pandas as pd
 # FUNGSI UTILITAS AES
 # =========================
 def derive_key_from_password(password: str) -> bytes:
-    """
-    Mengubah password menjadi kunci AES 128-bit menggunakan SHA-256
-    """
     if not password:
         raise ValueError("Password tidak boleh kosong.")
     sha256_hash = hashlib.sha256(password.encode("utf-8")).digest()
@@ -20,15 +17,10 @@ def derive_key_from_password(password: str) -> bytes:
 
 
 # =========================
-# ENKRIPSI AES (FIXED)
+# ENKRIPSI AES (END-TO-END)
 # =========================
 def aes_encrypt_cbc(plaintext: str, password: str):
-    """
-    Enkripsi AES-128 CBC + PKCS7
-    Output: ciphertext_hex, iv_hex, elapsed_time
-    """
-
-    t_start = time.perf_counter()  # ⬅️ MULAI DARI GENERATE KEY
+    t_start = time.perf_counter()
 
     key = derive_key_from_password(password)
     plaintext_bytes = plaintext.encode("utf-8")
@@ -39,21 +31,16 @@ def aes_encrypt_cbc(plaintext: str, password: str):
     cipher = AES.new(key, AES.MODE_CBC, iv=iv_bytes)
     ciphertext_bytes = cipher.encrypt(padded)
 
-    t_end = time.perf_counter()  # ⬅️ SAMPAI SELESAI ENKRIPSI
+    t_end = time.perf_counter()
 
     return ciphertext_bytes.hex(), iv_bytes.hex(), t_end - t_start
 
 
 # =========================
-# DEKRIPSI AES (FIXED)
+# DEKRIPSI AES (END-TO-END)
 # =========================
 def aes_decrypt_cbc(ciphertext_hex: str, iv_hex: str, password: str):
-    """
-    Dekripsi AES-128 CBC + PKCS7
-    Output: plaintext, elapsed_time
-    """
-
-    t_start = time.perf_counter()  # ⬅️ MULAI DARI GENERATE KEY
+    t_start = time.perf_counter()
 
     key = derive_key_from_password(password)
     ciphertext_bytes = bytes.fromhex(ciphertext_hex)
@@ -65,7 +52,7 @@ def aes_decrypt_cbc(ciphertext_hex: str, iv_hex: str, password: str):
     plaintext_bytes = unpad(padded_plaintext, AES.block_size)
     plaintext = plaintext_bytes.decode("utf-8")
 
-    t_end = time.perf_counter()  # ⬅️ SAMPAI SELESAI DEKRIPSI
+    t_end = time.perf_counter()
 
     return plaintext, t_end - t_start
 
@@ -74,32 +61,37 @@ def aes_decrypt_cbc(ciphertext_hex: str, iv_hex: str, password: str):
 # STREAMLIT APP
 # =========================
 st.set_page_config(
-    page_title="AES Tunggal - Enkripsi, Dekripsi & Uji Waktu",
+    page_title="AES Tunggal",
     layout="centered"
 )
 
-st.title("AES Tunggal (AES-128 CBC) - Enkripsi, Dekripsi & Pengujian Waktu N Kali")
+st.title("AES-128 CBC – Enkripsi, Dekripsi & Pengujian Waktu")
 
-st.write("""
-Aplikasi ini melakukan:
-1. Enkripsi pesan teks dengan AES-128 CBC berbasis password  
-2. Dekripsi ciphertext dengan password yang sama  
-3. Pengujian waktu N kali (enkripsi & dekripsi)  
-""")
-
-tab_enc, tab_dec = st.tabs(["Enkripsi & Pengujian", "Dekripsi & Pengujian"])
+tab_enc, tab_dec = st.tabs(["Enkripsi", "Dekripsi"])
 
 # =========================
 # TAB ENKRIPSI
 # =========================
 with tab_enc:
-    st.subheader("Enkripsi AES Tunggal + Uji Waktu")
+    st.subheader("🔒 Enkripsi AES")
 
-    plaintext = st.text_area("Masukkan Plaintext")
-    password_enc = st.text_input("Masukkan Password", type="password")
-    N_enc = st.number_input("Jumlah pengujian (N)", min_value=1, max_value=100, value=5)
+    plaintext = st.text_area("Masukkan Plaintext", key="plain_enc")
 
-    if st.button("Enkripsi & Uji"):
+    password_enc = st.text_input(
+        "Masukkan Password",
+        type="password",
+        key="pass_enc"
+    )
+
+    N_enc = st.number_input(
+        "Jumlah pengujian (N)",
+        min_value=1,
+        max_value=100,
+        value=5,
+        key="n_enc"
+    )
+
+    if st.button("Enkripsi & Uji", key="btn_enc"):
         if not plaintext:
             st.error("Plaintext tidak boleh kosong.")
         elif not password_enc:
@@ -125,10 +117,7 @@ with tab_enc:
             rata2 = df["Waktu (detik)"].mean()
 
             st.success("Enkripsi selesai")
-            st.write("Ciphertext (hex):")
             st.code(ciphertext_hex_final)
-
-            st.write("IV (hex):")
             st.code(iv_hex_final)
 
             st.dataframe(df)
@@ -139,14 +128,33 @@ with tab_enc:
 # TAB DEKRIPSI
 # =========================
 with tab_dec:
-    st.subheader("Dekripsi AES Tunggal + Uji Waktu")
+    st.subheader("🔓 Dekripsi AES")
 
-    ciphertext_input = st.text_area("Masukkan Ciphertext (hex)")
-    iv_input = st.text_input("Masukkan IV (hex)")
-    password_dec = st.text_input("Masukkan Password", type="password")
-    N_dec = st.number_input("Jumlah pengujian (N)", min_value=1, max_value=100, value=5)
+    ciphertext_input = st.text_area(
+        "Masukkan Ciphertext (hex)",
+        key="cipher_dec"
+    )
 
-    if st.button("Dekripsi & Uji"):
+    iv_input = st.text_input(
+        "Masukkan IV (hex)",
+        key="iv_dec"
+    )
+
+    password_dec = st.text_input(
+        "Masukkan Password",
+        type="password",
+        key="pass_dec"
+    )
+
+    N_dec = st.number_input(
+        "Jumlah pengujian (N)",
+        min_value=1,
+        max_value=100,
+        value=5,
+        key="n_dec"
+    )
+
+    if st.button("Dekripsi & Uji", key="btn_dec"):
         if not ciphertext_input or not iv_input or not password_dec:
             st.error("Semua input harus diisi.")
         else:
@@ -168,7 +176,6 @@ with tab_dec:
             rata2 = df["Waktu (detik)"].mean()
 
             st.success("Dekripsi selesai")
-            st.write("Plaintext:")
             st.code(plaintext_final)
 
             st.dataframe(df)
